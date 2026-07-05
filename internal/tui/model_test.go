@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -112,6 +113,20 @@ func TestSavedProfileLoadsIntoDashboard(t *testing.T) {
 	}
 	if got := reloaded.inputs[fieldAddress].Value(); got != testVLESSHost {
 		t.Fatalf("server address = %q", got)
+	}
+}
+
+func TestDashboardProfilesOnlyShowsActiveProfile(t *testing.T) {
+	model := newTestModel(t)
+	model.hasProfile = true
+	model.activeName = testVLESSName
+
+	view := model.dashboardView()
+	if !strings.Contains(view, testVLESSName) {
+		t.Fatalf("dashboard does not include active profile: %q", view)
+	}
+	if strings.Contains(view, "local-socks") || strings.Contains(view, "local-http") {
+		t.Fatalf("dashboard includes proxy entries as profiles: %q", view)
 	}
 }
 

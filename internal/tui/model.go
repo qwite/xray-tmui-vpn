@@ -312,7 +312,6 @@ func (m Model) dashboardView() string {
 	if profiles[0] == "" {
 		profiles[0] = "current-profile"
 	}
-	profiles = append(profiles, "local-socks", "local-http")
 
 	left := m.panel("Profiles", 28, m.profileLines(profiles))
 	right := m.panel("Status", 34, []string{
