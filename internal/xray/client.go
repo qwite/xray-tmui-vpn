@@ -122,6 +122,10 @@ func (c *Client) Running() bool {
 }
 
 func (c *Client) Version() string {
+	return Version()
+}
+
+func Version() string {
 	return core.Version()
 }
 

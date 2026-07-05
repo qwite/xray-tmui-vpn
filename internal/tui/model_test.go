@@ -1,10 +1,17 @@
 package tui
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/qwites/xray-tmui-vpn/internal/daemon"
+	"github.com/qwites/xray-tmui-vpn/internal/profile"
+	"github.com/qwites/xray-tmui-vpn/internal/xray"
 )
 
 const (
@@ -116,6 +123,49 @@ func TestSavedProfileLoadsIntoDashboard(t *testing.T) {
 	}
 }
 
+func TestDaemonConnectingStateLoadsAsBusy(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XRAY_TMUI_VPN_CONFIG_DIR", dir)
+
+	state := daemon.State{
+		PID:     os.Getpid(),
+		Status:  "connecting",
+		Version: xray.Version(),
+		Profile: profile.Profile{
+			Name: testVLESSName,
+			Config: xray.RuntimeConfig{
+				ServerAddress: testVLESSHost,
+				ServerPort:    443,
+				UUID:          testVLESSUUID,
+				ServerName:    testVLESSHost,
+				Security:      "tls",
+				SOCKSPort:     10808,
+				HTTPPort:      10809,
+			},
+		},
+		StartedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	model := NewModel()
+	if !model.busy {
+		t.Fatal("connecting daemon state should load as busy")
+	}
+	if model.running {
+		t.Fatal("connecting daemon state should not load as running")
+	}
+	if got := model.status; got != "Connecting..." {
+		t.Fatalf("status = %q", got)
+	}
+}
+
 func TestDashboardProfilesOnlyShowsActiveProfile(t *testing.T) {
 	model := newTestModel(t)
 	model.hasProfile = true
@@ -127,6 +177,98 @@ func TestDashboardProfilesOnlyShowsActiveProfile(t *testing.T) {
 	}
 	if strings.Contains(view, "local-socks") || strings.Contains(view, "local-http") {
 		t.Fatalf("dashboard includes proxy entries as profiles: %q", view)
+	}
+}
+
+func TestConfigViewCanReturnToDashboardWithEsc(t *testing.T) {
+	model := newTestModel(t)
+	model.hasProfile = true
+	model.activeName = testVLESSName
+	model.lastConfig = "{\n  \"log\": {}\n}"
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyF3})
+	model = updated.(Model)
+
+	if !model.showConfig {
+		t.Fatal("config view was not opened")
+	}
+	if view := model.View(); !strings.Contains(view, "f3/esc dashboard") {
+		t.Fatalf("config view does not show return controls: %q", view)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(Model)
+
+	if model.showConfig {
+		t.Fatal("config view did not close on esc")
+	}
+	if view := model.View(); !strings.Contains(view, testVLESSName) {
+		t.Fatalf("dashboard was not restored: %q", view)
+	}
+}
+
+func TestConfigViewScrolls(t *testing.T) {
+	model := newTestModel(t)
+	model.hasProfile = true
+	model.activeName = testVLESSName
+	model.height = 14
+	model.lastConfig = strings.Join([]string{
+		"line 1",
+		"line 2",
+		"line 3",
+		"line 4",
+		"line 5",
+		"line 6",
+		"line 7",
+		"line 8",
+	}, "\n")
+	model.showConfig = true
+
+	if strings.Contains(model.configView(), "line 8") {
+		t.Fatal("last line is visible before scrolling")
+	}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	model = updated.(Model)
+
+	if model.configScroll != 1 {
+		t.Fatalf("configScroll = %d, want 1", model.configScroll)
+	}
+	if !strings.Contains(model.configView(), "line 8") {
+		t.Fatal("last line is not visible after scrolling")
+	}
+}
+
+func TestBusyStatusTextAnimates(t *testing.T) {
+	model := newTestModel(t)
+	model.busy = true
+	model.status = "Connecting..."
+
+	if got := model.renderStatusText(); got != "Connecting   " {
+		t.Fatalf("status frame 0 = %q", got)
+	}
+
+	updated, _ := model.Update(animationTickMsg{})
+	model = updated.(Model)
+
+	if got := model.renderStatusText(); got != "Connecting.  " {
+		t.Fatalf("status frame 1 = %q", got)
+	}
+}
+
+func TestAnimationTickStopsWhenNotBusy(t *testing.T) {
+	model := newTestModel(t)
+	model.busy = false
+	model.statusTick = 3
+
+	updated, cmd := model.Update(animationTickMsg{})
+	model = updated.(Model)
+
+	if cmd != nil {
+		t.Fatal("animation tick scheduled another command while not busy")
+	}
+	if model.statusTick != 3 {
+		t.Fatalf("statusTick = %d, want unchanged", model.statusTick)
 	}
 }
 

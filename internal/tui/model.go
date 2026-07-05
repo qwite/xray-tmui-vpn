@@ -9,8 +9,8 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/qwites/xray-tmui-vpn/internal/daemon"
 	"github.com/qwites/xray-tmui-vpn/internal/profile"
-	"github.com/qwites/xray-tmui-vpn/internal/systemproxy"
 	"github.com/qwites/xray-tmui-vpn/internal/xray"
 )
 
@@ -33,38 +33,56 @@ const (
 )
 
 var (
-	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
-	labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	okStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	helpStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	titleStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	labelStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	okStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	errStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	helpStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	panelTitleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("81"))
+	activeStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
+	busyStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("220"))
+	stoppedStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	statusLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	statusValueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	profileNameStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("75"))
+	trafficUpStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	trafficDownStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("43"))
+	endpointStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("141"))
 )
 
 type Model struct {
-	engine     *xray.Client
-	proxy      *systemproxy.Manager
-	inputs     []textinput.Model
-	focusIndex int
-	security   string
-	running    bool
-	busy       bool
-	showConfig bool
-	status     string
-	lastConfig string
-	activeName string
-	hasProfile bool
-	editing    bool
-	snapshot   xray.Snapshot
-	logs       []string
+	inputs       []textinput.Model
+	focusIndex   int
+	security     string
+	running      bool
+	busy         bool
+	showConfig   bool
+	configScroll int
+	width        int
+	height       int
+	status       string
+	statusTick   int
+	lastConfig   string
+	activeName   string
+	hasProfile   bool
+	editing      bool
+	snapshot     xray.Snapshot
+	logs         []string
 }
 
-type startedMsg struct{}
+type startedMsg struct {
+	snapshot xray.Snapshot
+}
 type stoppedMsg struct {
 	snapshot xray.Snapshot
 }
 type metricsMsg struct {
 	snapshot xray.Snapshot
+	running  bool
+	busy     bool
+	status   string
 }
+type animationTickMsg struct{}
 type exportedLogsMsg struct {
 	path string
 	logs []string
@@ -109,15 +127,12 @@ func NewModel() Model {
 
 	inputs[fieldAddress].Focus()
 
-	engine := xray.NewClient()
 	model := Model{
-		engine:     engine,
-		proxy:      systemproxy.NewManager(),
 		inputs:     inputs,
 		focusIndex: int(fieldAddress),
 		security:   "reality",
 		status:     "Idle",
-		snapshot:   xray.Snapshot{Version: engine.Version()},
+		snapshot:   xray.Snapshot{Version: xray.Version()},
 	}
 
 	savedProfile, ok, err := profile.Load()
@@ -133,20 +148,96 @@ func NewModel() Model {
 		model.refreshConfig()
 	}
 
+	state, active, err := daemon.Status()
+	if err != nil {
+		model.status = "Load daemon state: " + err.Error()
+		return model
+	}
+	if state.Profile.Config.UUID != "" {
+		model.applyConfig(state.Profile.Config)
+		model.activeName = state.Profile.Name
+		model.hasProfile = true
+		model.refreshConfig()
+	}
+	if active {
+		model.running = daemon.IsConnected(state)
+		model.busy = daemon.IsConnecting(state) || daemon.IsDisconnecting(state)
+		model.status = daemon.DisplayStatus(state, active)
+		model.snapshot = daemon.SnapshotFromState(state)
+		model.logs = state.LogLines
+	} else if daemon.IsError(state) {
+		model.status = daemon.DisplayStatus(state, active)
+	}
+
 	return model
 }
 
 func (m Model) Init() tea.Cmd {
+	if m.running {
+		return tea.Batch(textinput.Blink, m.metricsCmd())
+	}
+	if m.busy {
+		return tea.Batch(textinput.Blink, m.metricsCmd(), m.animationCmd())
+	}
 	return textinput.Blink
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.clampConfigScroll()
+		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "esc":
-			return m, tea.Sequence(m.stopCmd(), tea.Quit)
-		case "tab", "shift+tab", "up", "down":
+		case "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			if m.showConfig {
+				m.showConfig = false
+				return m, nil
+			}
+			return m, tea.Quit
+		case "up", "k":
+			if m.showConfig {
+				m.scrollConfig(-1)
+				return m, nil
+			}
+			if m.inEditMode() && msg.String() == "up" {
+				m.moveFocus(msg.String())
+			}
+			return m, nil
+		case "down", "j":
+			if m.showConfig {
+				m.scrollConfig(1)
+				return m, nil
+			}
+			if m.inEditMode() && msg.String() == "down" {
+				m.moveFocus(msg.String())
+			}
+			return m, nil
+		case "pgup":
+			if m.showConfig {
+				m.scrollConfig(-m.configPageSize())
+			}
+			return m, nil
+		case "pgdown":
+			if m.showConfig {
+				m.scrollConfig(m.configPageSize())
+			}
+			return m, nil
+		case "home":
+			if m.showConfig {
+				m.configScroll = 0
+			}
+			return m, nil
+		case "end":
+			if m.showConfig {
+				m.configScroll = m.maxConfigScroll()
+			}
+			return m, nil
+		case "tab", "shift+tab":
 			if m.inEditMode() {
 				m.moveFocus(msg.String())
 			}
@@ -160,6 +251,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "f3":
 			m.showConfig = !m.showConfig
 			m.refreshConfig()
+			m.configScroll = 0
 			return m, nil
 		case "f4":
 			if m.inEditMode() && !m.busy && !m.running {
@@ -183,7 +275,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.running {
 				m.busy = true
 				m.status = "Disconnecting..."
-				return m, m.stopCmd()
+				m.statusTick = 0
+				return m, tea.Batch(m.stopCmd(), m.animationCmd())
 			}
 
 			config, err := m.runtimeConfig()
@@ -199,34 +292,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshConfig()
 			m.busy = true
 			m.status = "Connecting..."
+			m.statusTick = 0
 			m.logs = appendLog(m.logs, "Connecting to "+m.activeName)
-			return m, m.startCmd(config)
+			return m, tea.Batch(m.startCmd(config), m.animationCmd())
 		}
 	case startedMsg:
 		m.busy = false
+		m.statusTick = 0
 		m.running = true
 		m.status = "Connected"
+		m.snapshot = msg.snapshot
+		m.logs = mergeLogs(m.logs, msg.snapshot.LogLines)
 		m.logs = appendLog(m.logs, "Xray started")
 		m.logs = appendLog(m.logs, "System proxy enabled")
 		return m, m.metricsCmd()
 	case stoppedMsg:
 		m.busy = false
+		m.statusTick = 0
 		m.running = false
 		m.status = "Disconnected"
 		m.snapshot = msg.snapshot
-		m.snapshot.Version = valueOr(m.snapshot.Version, m.engine.Version())
+		m.snapshot.Version = valueOr(m.snapshot.Version, xray.Version())
 		m.logs = mergeLogs(m.logs, msg.snapshot.LogLines)
 		m.logs = appendLog(m.logs, "Disconnected")
 		return m, nil
 	case errMsg:
 		m.busy = false
+		m.statusTick = 0
 		m.status = msg.err.Error()
 		m.logs = appendLog(m.logs, "Error: "+msg.err.Error())
 		return m, nil
+	case animationTickMsg:
+		if !m.busy {
+			return m, nil
+		}
+		m.statusTick++
+		return m, m.animationCmd()
 	case metricsMsg:
 		m.snapshot = msg.snapshot
 		m.logs = mergeLogs(m.logs, msg.snapshot.LogLines)
-		if m.running {
+		m.running = msg.running
+		m.busy = msg.busy
+		if msg.status != "" {
+			m.status = msg.status
+		}
+		if m.running || m.busy {
 			return m, m.metricsCmd()
 		}
 		return m, nil
@@ -246,6 +356,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
+	if m.showConfig {
+		return m.configView()
+	}
 	if m.inEditMode() {
 		return m.editView()
 	}
@@ -297,12 +410,6 @@ func (m Model) editView() string {
 	}
 
 	b.WriteString(helpStyle.Render(fmt.Sprintf("%s | tab focus | f2 security | f3 config | f4 import | esc quit", action)))
-	if m.showConfig {
-		b.WriteString("\n\n")
-		b.WriteString(labelStyle.Render("Generated config"))
-		b.WriteString("\n")
-		b.WriteString(m.lastConfig)
-	}
 
 	return b.String()
 }
@@ -314,16 +421,7 @@ func (m Model) dashboardView() string {
 	}
 
 	left := m.panel("Profiles", 28, m.profileLines(profiles))
-	right := m.panel("Status", 34, []string{
-		"Xray: " + m.xrayState(),
-		"Version: " + valueOr(m.snapshot.Version, m.engine.Version()),
-		"Active profile: " + valueOr(m.activeName, "current-profile"),
-		"Status: " + m.status,
-		"Uplink: " + formatBytes(m.snapshot.UplinkBytes),
-		"Downlink: " + formatBytes(m.snapshot.DownlinkBytes),
-		"SOCKS: 127.0.0.1:" + m.inputs[fieldSOCKSPort].Value(),
-		"HTTP: 127.0.0.1:" + m.inputs[fieldHTTPPort].Value(),
-	})
+	right := m.panel("Status", 38, m.statusLines())
 
 	content := lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right)
 	action := "enter connect"
@@ -331,10 +429,40 @@ func (m Model) dashboardView() string {
 		action = "enter disconnect"
 	}
 	help := helpStyle.Render(fmt.Sprintf("%s | e edit | f3 config | f5 export logs | esc quit", action))
-	if m.showConfig {
-		return content + "\n\n" + help + "\n\n" + labelStyle.Render("Generated config") + "\n" + m.lastConfig
-	}
 	return content + "\n\n" + help
+}
+
+func (m Model) configView() string {
+	lines := strings.Split(m.lastConfig, "\n")
+	if len(lines) == 0 {
+		lines = []string{""}
+	}
+
+	pageSize := m.configPageSize()
+	start := minInt(m.configScroll, len(lines))
+	end := minInt(start+pageSize, len(lines))
+	visible := lines[start:end]
+
+	header := titleStyle.Render("Generated config")
+	help := helpStyle.Render("f3/esc dashboard | up/down scroll | pgup/pgdown page | home/end jump")
+	position := helpStyle.Render(fmt.Sprintf("lines %d-%d of %d", start+1, maxInt(start+1, end), len(lines)))
+	width := m.width
+	if width <= 0 {
+		width = 96
+	}
+	if width > 4 {
+		width -= 4
+	}
+
+	body := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("245")).
+		Padding(0, 1).
+		Width(width).
+		Height(pageSize).
+		Render(strings.Join(visible, "\n"))
+
+	return strings.Join([]string{header, help, position, body}, "\n")
 }
 
 func (m Model) inEditMode() bool {
@@ -348,10 +476,10 @@ func (m Model) panel(title string, width int, lines []string) string {
 	}
 	return lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color("245")).
+		BorderForeground(lipgloss.Color("238")).
 		Padding(0, 1).
 		Width(width).
-		Render(labelStyle.Render(title) + "\n" + body)
+		Render(panelTitleStyle.Render(title) + "\n" + body)
 }
 
 func (m Model) profileLines(profiles []string) []string {
@@ -360,15 +488,58 @@ func (m Model) profileLines(profiles []string) []string {
 		prefix := "  "
 		if i == 0 {
 			prefix = "* "
+			lines = append(lines, activeStyle.Render(prefix)+profileNameStyle.Render(profile))
+			continue
 		}
-		lines = append(lines, prefix+profile)
+		lines = append(lines, stoppedStyle.Render(prefix+profile))
 	}
 	return lines
 }
 
+func (m Model) statusLines() []string {
+	return []string{
+		statusLine("Xray", m.styledXrayState()),
+		statusLine("Version", statusValueStyle.Render(valueOr(m.snapshot.Version, xray.Version()))),
+		statusLine("Active profile", profileNameStyle.Render(valueOr(m.activeName, "current-profile"))),
+		statusLine("Status", m.styledStatus()),
+		statusLine("Uplink", trafficUpStyle.Render(formatBytes(m.snapshot.UplinkBytes))),
+		statusLine("Downlink", trafficDownStyle.Render(formatBytes(m.snapshot.DownlinkBytes))),
+		statusLine("SOCKS", endpointStyle.Render("127.0.0.1:"+m.inputs[fieldSOCKSPort].Value())),
+		statusLine("HTTP", endpointStyle.Render("127.0.0.1:"+m.inputs[fieldHTTPPort].Value())),
+	}
+}
+
+func statusLine(label string, value string) string {
+	return statusLabelStyle.Render(label+": ") + value
+}
+
+func (m Model) styledXrayState() string {
+	state := m.xrayState()
+	if m.busy {
+		return busyStyle.Render(state)
+	}
+	if m.running {
+		return okStyle.Bold(true).Render(state)
+	}
+	return stoppedStyle.Render(state)
+}
+
+func (m Model) styledStatus() string {
+	if m.busy {
+		return busyStyle.Render(m.renderStatusText())
+	}
+	if m.running {
+		return okStyle.Bold(true).Render(m.renderStatusText())
+	}
+	if m.status == "Ready" || m.status == "Idle" || m.status == "Disconnected" {
+		return stoppedStyle.Render(m.status)
+	}
+	return errStyle.Render(m.status)
+}
+
 func (m Model) xrayState() string {
 	if m.busy {
-		return strings.ToLower(strings.TrimSuffix(m.status, "..."))
+		return strings.ToLower(strings.TrimSuffix(m.renderStatusText(), "..."))
 	}
 	if m.running {
 		return "running"
@@ -378,15 +549,52 @@ func (m Model) xrayState() string {
 
 func (m Model) renderStatus() string {
 	if m.running {
-		return okStyle.Render(m.status)
+		return okStyle.Render(m.renderStatusText())
 	}
 	if m.busy {
-		return labelStyle.Render(m.status)
+		return labelStyle.Render(m.renderStatusText())
 	}
 	if m.status == "Idle" || m.status == "Disconnected" {
 		return labelStyle.Render(m.status)
 	}
 	return errStyle.Render(m.status)
+}
+
+func (m Model) renderStatusText() string {
+	if !m.busy {
+		return m.status
+	}
+
+	base := strings.TrimRight(m.status, ".")
+	frames := []string{"   ", ".  ", ".. ", "..."}
+	return base + frames[m.statusTick%len(frames)]
+}
+
+func (m *Model) scrollConfig(delta int) {
+	m.configScroll += delta
+	m.clampConfigScroll()
+}
+
+func (m *Model) clampConfigScroll() {
+	if m.configScroll < 0 {
+		m.configScroll = 0
+	}
+	maxScroll := m.maxConfigScroll()
+	if m.configScroll > maxScroll {
+		m.configScroll = maxScroll
+	}
+}
+
+func (m Model) maxConfigScroll() int {
+	lines := strings.Split(m.lastConfig, "\n")
+	return maxInt(0, len(lines)-m.configPageSize())
+}
+
+func (m Model) configPageSize() int {
+	if m.height <= 0 {
+		return 24
+	}
+	return maxInt(6, m.height-7)
 }
 
 func (m *Model) moveFocus(key string) {
@@ -442,27 +650,41 @@ func (m Model) visibleField(candidate field) bool {
 
 func (m Model) startCmd(config xray.RuntimeConfig) tea.Cmd {
 	return func() tea.Msg {
-		if err := m.engine.Start(config); err != nil {
+		state, err := daemon.Start(profile.Profile{Name: m.activeName, Config: config})
+		if err != nil {
 			return errMsg{err: err}
 		}
-		if err := m.proxy.Enable(config.SOCKSPort, config.HTTPPort); err != nil {
-			_ = m.engine.Stop()
-			return errMsg{err: err}
-		}
-		return startedMsg{}
+		return startedMsg{snapshot: daemon.SnapshotFromState(state)}
 	}
 }
 
 func (m Model) metricsCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg {
-		return metricsMsg{snapshot: m.engine.Snapshot()}
+		state, running, err := daemon.Status()
+		if err != nil {
+			return errMsg{err: err}
+		}
+		busy := running && (daemon.IsConnecting(state) || daemon.IsDisconnecting(state))
+		connected := running && daemon.IsConnected(state)
+		status := daemon.DisplayStatus(state, running)
+		return metricsMsg{snapshot: daemon.SnapshotFromState(state), running: connected, busy: busy, status: status}
+	})
+}
+
+func (m Model) animationCmd() tea.Cmd {
+	return tea.Tick(180*time.Millisecond, func(time.Time) tea.Msg {
+		return animationTickMsg{}
 	})
 }
 
 func (m Model) exportLogsCmd() tea.Cmd {
 	existing := append([]string(nil), m.logs...)
 	return func() tea.Msg {
-		logs := mergeLogs(existing, m.engine.Snapshot().LogLines)
+		state, _, err := daemon.Status()
+		if err != nil {
+			return errMsg{err: err}
+		}
+		logs := mergeLogs(existing, state.LogLines)
 		path, err := profile.ExportLogs(logs)
 		if err != nil {
 			return errMsg{err: err}
@@ -473,15 +695,11 @@ func (m Model) exportLogsCmd() tea.Cmd {
 
 func (m Model) stopCmd() tea.Cmd {
 	return func() tea.Msg {
-		snapshot := m.engine.Snapshot()
-		if err := m.proxy.Disable(); err != nil {
-			_ = m.engine.Stop()
+		state, err := daemon.Stop()
+		if err != nil {
 			return errMsg{err: err}
 		}
-		if err := m.engine.Stop(); err != nil {
-			return errMsg{err: err}
-		}
-		return stoppedMsg{snapshot: snapshot}
+		return stoppedMsg{snapshot: daemon.SnapshotFromState(state)}
 	}
 }
 
@@ -676,6 +894,20 @@ func valueOr(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func splitListInput(value string) []string {

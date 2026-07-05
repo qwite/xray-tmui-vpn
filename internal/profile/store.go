@@ -75,7 +75,7 @@ func Save(profile Profile) error {
 }
 
 func ExportLogs(lines []string) (string, error) {
-	dir, err := dataDir()
+	dir, err := DataDir()
 	if err != nil {
 		return "", err
 	}
@@ -92,14 +92,14 @@ func ExportLogs(lines []string) (string, error) {
 }
 
 func profilePath() (string, error) {
-	dir, err := configDir()
+	dir, err := ConfigDir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, "profile.json"), nil
 }
 
-func configDir() (string, error) {
+func ConfigDir() (string, error) {
 	if dir := strings.TrimSpace(os.Getenv(envConfigDir)); dir != "" {
 		return dir, nil
 	}
@@ -111,7 +111,7 @@ func configDir() (string, error) {
 	return filepath.Join(dir, "xray-tmui-vpn"), nil
 }
 
-func dataDir() (string, error) {
+func DataDir() (string, error) {
 	if dir := strings.TrimSpace(os.Getenv(envConfigDir)); dir != "" {
 		return dir, nil
 	}

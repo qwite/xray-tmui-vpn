@@ -1,0 +1,147 @@
+package daemon
+
+import (
+	"os"
+	"testing"
+	"time"
+
+	"github.com/qwites/xray-tmui-vpn/internal/profile"
+	"github.com/qwites/xray-tmui-vpn/internal/xray"
+)
+
+func TestStatusReportsCurrentProcessActive(t *testing.T) {
+	t.Setenv("XRAY_TMUI_VPN_CONFIG_DIR", t.TempDir())
+
+	want := State{
+		PID:     os.Getpid(),
+		Status:  statusConnected,
+		Version: xray.Version(),
+		Profile: profile.Profile{
+			Name: "example-profile",
+			Config: xray.RuntimeConfig{
+				ServerAddress: "vpn.example.com",
+				ServerPort:    443,
+				UUID:          "11111111-1111-4111-8111-111111111111",
+				ServerName:    "vpn.example.com",
+				Security:      "tls",
+				SOCKSPort:     10808,
+				HTTPPort:      10809,
+			},
+		},
+		StartedAt: time.Now(),
+	}
+	if err := saveState(want); err != nil {
+		t.Fatal(err)
+	}
+
+	got, active, err := Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !active {
+		t.Fatal("current process state was not active")
+	}
+	if got.PID != want.PID {
+		t.Fatalf("pid = %d, want %d", got.PID, want.PID)
+	}
+}
+
+func TestStatusPreservesDaemonError(t *testing.T) {
+	t.Setenv("XRAY_TMUI_VPN_CONFIG_DIR", t.TempDir())
+
+	want := State{
+		PID:    999999,
+		Status: statusError,
+		Error:  "failed to start",
+	}
+	if err := saveState(want); err != nil {
+		t.Fatal(err)
+	}
+
+	got, active, err := Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active {
+		t.Fatal("error state should not be active")
+	}
+	if got.Status != statusError {
+		t.Fatalf("status = %q, want %q", got.Status, statusError)
+	}
+	if got.Error != want.Error {
+		t.Fatalf("error = %q", got.Error)
+	}
+}
+
+func TestSnapshotFromState(t *testing.T) {
+	state := State{
+		Version:       "26.3.27",
+		UplinkBytes:   123,
+		DownlinkBytes: 456,
+		LogLines:      []string{"started"},
+	}
+
+	snapshot := SnapshotFromState(state)
+	if snapshot.Version != state.Version {
+		t.Fatalf("version = %q", snapshot.Version)
+	}
+	if snapshot.UplinkBytes != state.UplinkBytes {
+		t.Fatalf("uplink = %d", snapshot.UplinkBytes)
+	}
+	if snapshot.DownlinkBytes != state.DownlinkBytes {
+		t.Fatalf("downlink = %d", snapshot.DownlinkBytes)
+	}
+	if len(snapshot.LogLines) != 1 || snapshot.LogLines[0] != "started" {
+		t.Fatalf("logs = %#v", snapshot.LogLines)
+	}
+}
+
+func TestDisplayStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		state  State
+		active bool
+		want   string
+	}{
+		{
+			name:   "connecting",
+			state:  State{Status: statusConnecting},
+			active: true,
+			want:   "Connecting...",
+		},
+		{
+			name:   "connected",
+			state:  State{Status: statusConnected},
+			active: true,
+			want:   "Connected",
+		},
+		{
+			name:   "error",
+			state:  State{Status: statusError, Error: "probe failed"},
+			active: false,
+			want:   "probe failed",
+		},
+		{
+			name:   "disconnected",
+			state:  State{Status: statusDisconnected},
+			active: false,
+			want:   "Disconnected",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := DisplayStatus(tt.state, tt.active); got != tt.want {
+				t.Fatalf("DisplayStatus() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadinessURLCanBeOverridden(t *testing.T) {
+	t.Setenv(readinessURLEnv, "http://probe.example.test/")
+
+	if got := readinessURL(); got != "http://probe.example.test/" {
+		t.Fatalf("readinessURL() = %q", got)
+	}
+}
