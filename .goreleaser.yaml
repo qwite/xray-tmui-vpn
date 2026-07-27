@@ -1,0 +1,57 @@
+version: 2
+
+project_name: xray-tmui-vpn
+
+builds:
+  - id: xray-tmui-vpn
+    main: ./cmd/xray-tmui-vpn
+    binary: xray-tmui-vpn
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/qwites/xray-tmui-vpn/internal/buildinfo.Version={{ .Version }}
+      - -X github.com/qwites/xray-tmui-vpn/internal/buildinfo.Commit={{ .Commit }}
+      - -X github.com/qwites/xray-tmui-vpn/internal/buildinfo.Date={{ .CommitDate }}
+    goos:
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - ids:
+      - xray-tmui-vpn
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - PROJECT_CONTEXT.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  prerelease: auto
+  make_latest: false

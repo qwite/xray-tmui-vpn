@@ -73,6 +73,26 @@ func TestStatusPreservesDaemonError(t *testing.T) {
 	}
 }
 
+func TestStopReturnsPersistedDaemonError(t *testing.T) {
+	t.Setenv("XRAY_TMUI_VPN_CONFIG_DIR", t.TempDir())
+
+	want := "disconnect cleanup: restore proxy settings"
+	if err := saveState(State{
+		Status: statusError,
+		Error:  want,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := Stop()
+	if err == nil || err.Error() != want {
+		t.Fatalf("Stop() error = %v, want %q", err, want)
+	}
+	if state.Error != want {
+		t.Fatalf("state error = %q, want %q", state.Error, want)
+	}
+}
+
 func TestSnapshotFromState(t *testing.T) {
 	state := State{
 		Version:       "26.3.27",
@@ -143,5 +163,40 @@ func TestReadinessURLCanBeOverridden(t *testing.T) {
 
 	if got := readinessURL(); got != "http://probe.example.test/" {
 		t.Fatalf("readinessURL() = %q", got)
+	}
+}
+
+func TestStopRequestMatchesDaemonPID(t *testing.T) {
+	t.Setenv("XRAY_TMUI_VPN_CONFIG_DIR", t.TempDir())
+
+	if err := requestDaemonStop(1234); err != nil {
+		t.Fatalf("requestDaemonStop: %v", err)
+	}
+
+	requested, err := stopRequested(1234)
+	if err != nil {
+		t.Fatalf("stopRequested: %v", err)
+	}
+	if !requested {
+		t.Fatal("stopRequested() = false for matching PID")
+	}
+
+	requested, err = stopRequested(4321)
+	if err != nil {
+		t.Fatalf("stopRequested for another PID: %v", err)
+	}
+	if requested {
+		t.Fatal("stopRequested() = true for another PID")
+	}
+
+	if err := clearStopRequest(); err != nil {
+		t.Fatalf("clearStopRequest: %v", err)
+	}
+	requested, err = stopRequested(1234)
+	if err != nil {
+		t.Fatalf("stopRequested after clear: %v", err)
+	}
+	if requested {
+		t.Fatal("stopRequested() = true after clear")
 	}
 }

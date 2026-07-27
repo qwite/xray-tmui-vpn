@@ -44,6 +44,10 @@ type State struct {
 	Config        xray.RuntimeConfig `json:"-"`
 }
 
+type stopRequest struct {
+	PID int `json:"pid"`
+}
+
 func Run() error {
 	ignoreTerminalHangup()
 
@@ -112,22 +116,16 @@ func Run() error {
 	for {
 		select {
 		case <-ticker.C:
+			if requested, _ := stopRequested(os.Getpid()); requested {
+				_ = clearStopRequest()
+				return shutdown(client, proxy, state)
+			}
 			state = applySnapshot(state, client.Snapshot())
 			state.Status = statusConnected
 			state.UpdatedAt = time.Now()
 			_ = saveState(state)
 		case <-signals:
-			state.Status = statusDisconnecting
-			state.UpdatedAt = time.Now()
-			_ = saveState(state)
-
-			state = applySnapshot(state, client.Snapshot())
-			_ = proxy.Disable()
-			_ = client.Stop()
-			state.PID = 0
-			state.Status = statusDisconnected
-			state.UpdatedAt = time.Now()
-			return saveState(state)
+			return shutdown(client, proxy, state)
 		}
 	}
 }
@@ -144,6 +142,9 @@ func Start(savedProfile profile.Profile) (State, error) {
 		return State{}, err
 	} else if active {
 		return state, nil
+	}
+	if err := clearStopRequest(); err != nil {
+		return State{}, err
 	}
 
 	executable, err := os.Executable()
@@ -196,14 +197,13 @@ func Stop() (State, error) {
 		return State{}, err
 	}
 	if !active {
+		if IsError(state) && strings.TrimSpace(state.Error) != "" {
+			return state, errors.New(state.Error)
+		}
 		return state, nil
 	}
 
-	process, err := os.FindProcess(state.PID)
-	if err != nil {
-		return state, err
-	}
-	if err := terminateProcess(process); err != nil {
+	if err := requestDaemonStop(state.PID); err != nil {
 		return state, err
 	}
 
@@ -214,12 +214,29 @@ func Stop() (State, error) {
 			return next, err
 		}
 		if !active {
+			if IsError(next) && strings.TrimSpace(next.Error) != "" {
+				return next, errors.New(next.Error)
+			}
 			return next, nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	return state, fmt.Errorf("daemon did not stop")
+	process, err := os.FindProcess(state.PID)
+	if err != nil {
+		return state, err
+	}
+	if err := terminateProcess(process); err != nil {
+		return state, err
+	}
+
+	err = errors.New("daemon did not stop gracefully; forced termination may have left system proxy settings enabled")
+	state.PID = 0
+	state.Status = statusError
+	state.Error = err.Error()
+	_ = saveState(state)
+	_ = clearStopRequest()
+	return state, err
 }
 
 func Status() (State, bool, error) {
@@ -289,6 +306,14 @@ func statePath() (string, error) {
 	return filepath.Join(dir, "state.json"), nil
 }
 
+func stopRequestPath() (string, error) {
+	dir, err := profile.ConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "stop.json"), nil
+}
+
 func openDaemonLog() (*os.File, error) {
 	dir, err := profile.DataDir()
 	if err != nil {
@@ -337,6 +362,52 @@ func saveState(state State) error {
 	return os.WriteFile(path, append(data, '\n'), 0600)
 }
 
+func requestDaemonStop(pid int) error {
+	path, err := stopRequestPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	data, err := json.Marshal(stopRequest{PID: pid})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0600)
+}
+
+func stopRequested(pid int) (bool, error) {
+	path, err := stopRequestPath()
+	if err != nil {
+		return false, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	var request stopRequest
+	if err := json.Unmarshal(data, &request); err != nil {
+		return false, err
+	}
+	return request.PID == pid, nil
+}
+
+func clearStopRequest() error {
+	path, err := stopRequestPath()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -346,6 +417,28 @@ func processAlive(pid int) bool {
 		return false
 	}
 	return processRunning(process)
+}
+
+func shutdown(client *xray.Client, proxy *systemproxy.Manager, state State) error {
+	state.Status = statusDisconnecting
+	state.UpdatedAt = time.Now()
+	_ = saveState(state)
+
+	state = applySnapshot(state, client.Snapshot())
+	proxyErr := proxy.Disable()
+	clientErr := client.Stop()
+	cleanupErr := errors.Join(proxyErr, clientErr)
+	state.PID = 0
+	if cleanupErr != nil {
+		state.Status = statusError
+		state.Error = "disconnect cleanup: " + cleanupErr.Error()
+	} else {
+		state.Status = statusDisconnected
+		state.Error = ""
+	}
+	state.UpdatedAt = time.Now()
+	stateErr := saveState(state)
+	return errors.Join(cleanupErr, stateErr)
 }
 
 func waitForProxyReady(config xray.RuntimeConfig, client *xray.Client, state State) error {

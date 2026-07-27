@@ -21,7 +21,7 @@ func notifyStop(signals chan<- os.Signal) {
 }
 
 func terminateProcess(process *os.Process) error {
-	return process.Signal(syscall.SIGTERM)
+	return process.Kill()
 }
 
 func processRunning(process *os.Process) bool {

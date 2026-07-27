@@ -16,7 +16,7 @@ The app uses:
 - Choose `none`, `tls`, or `reality` stream security.
 - Start and stop an embedded xray-core instance.
 - Expose local SOCKS and HTTP proxy inbounds.
-- Enable macOS system HTTP/HTTPS/SOCKS proxies while connected.
+- Enable macOS and Windows system HTTP/HTTPS/SOCKS proxies while connected.
 - Keep the VPN session alive in a background daemon after the TUI exits.
 - Switch to a connected dashboard with profile, status, traffic, and log panes.
 - Capture xray access/error logs inside the TUI instead of printing below it.
@@ -29,6 +29,35 @@ Go is required locally.
 ```bash
 go mod tidy
 go run ./cmd/xray-tmui-vpn
+go run ./cmd/xray-tmui-vpn --version
+```
+
+Prebuilt archives are published on the
+[GitHub Releases](https://github.com/qwite/xray-tmui-vpn/releases) page.
+
+## Build
+
+The application is a single executable and does not require a separate Xray
+installation.
+
+```bash
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o xray-tmui-vpn-darwin-arm64 ./cmd/xray-tmui-vpn
+CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -o xray-tmui-vpn-darwin-amd64 ./cmd/xray-tmui-vpn
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o xray-tmui-vpn-windows-amd64.exe ./cmd/xray-tmui-vpn
+```
+
+## Release
+
+Pushing a semantic version tag such as `v0.1.0-alpha` runs GoReleaser through
+GitHub Actions. The workflow tests the project, builds macOS amd64/arm64 and
+Windows amd64 archives, generates SHA-256 checksums, and publishes a GitHub
+prerelease for tags with a prerelease suffix.
+
+Validate the release configuration locally without publishing:
+
+```bash
+goreleaser check
+goreleaser release --snapshot --clean
 ```
 
 ## Controls
@@ -45,10 +74,14 @@ go run ./cmd/xray-tmui-vpn
 ## Notes
 
 This is a proxy-mode client. It starts local SOCKS/HTTP listeners and routes
-traffic through the configured VLESS outbound. On macOS, it also points the
-system HTTP/HTTPS/SOCKS proxy settings at those listeners while connected and
-restores the previous disabled proxy state on disconnect. It does not create a
-system TUN interface yet.
+traffic through the configured VLESS outbound. On macOS and Windows, it also
+points the current user's system HTTP/HTTPS/SOCKS proxy settings at those
+listeners while connected and restores the previous settings on disconnect.
+It does not create a system TUN interface yet.
+
+The Windows integration updates the current user's WinINet proxy settings.
+Applications and Windows services that ignore those settings or use WinHTTP
+directly will not be routed through the client.
 
 The TUI starts a background daemon when connecting. Closing the terminal or
 quitting with `esc` / `ctrl+c` leaves that daemon running, so the VPN remains
@@ -58,3 +91,6 @@ daemon.
 
 For a full VPN experience, the next step is adding a TUN inbound and platform
 specific routing/DNS setup.
+
+Architecture, current engineering constraints, and the working roadmap are
+tracked in [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md).

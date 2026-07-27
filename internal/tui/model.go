@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/qwites/xray-tmui-vpn/internal/buildinfo"
 	"github.com/qwites/xray-tmui-vpn/internal/daemon"
 	"github.com/qwites/xray-tmui-vpn/internal/profile"
 	"github.com/qwites/xray-tmui-vpn/internal/xray"
@@ -369,7 +370,7 @@ func (m Model) View() string {
 func (m Model) editView() string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("xray-tmui-vpn"))
+	b.WriteString(titleStyle.Render("xray-tmui-vpn " + buildinfo.DisplayVersion()))
 	b.WriteString("\n")
 	b.WriteString(labelStyle.Render("Embedded xray-core VLESS client"))
 	b.WriteString("\n\n")
@@ -498,8 +499,9 @@ func (m Model) profileLines(profiles []string) []string {
 
 func (m Model) statusLines() []string {
 	return []string{
+		statusLine("App version", statusValueStyle.Render(buildinfo.DisplayVersion())),
 		statusLine("Xray", m.styledXrayState()),
-		statusLine("Version", statusValueStyle.Render(valueOr(m.snapshot.Version, xray.Version()))),
+		statusLine("Xray version", statusValueStyle.Render(valueOr(m.snapshot.Version, xray.Version()))),
 		statusLine("Active profile", profileNameStyle.Render(valueOr(m.activeName, "current-profile"))),
 		statusLine("Status", m.styledStatus()),
 		statusLine("Uplink", trafficUpStyle.Render(formatBytes(m.snapshot.UplinkBytes))),
