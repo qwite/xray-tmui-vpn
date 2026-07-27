@@ -62,7 +62,7 @@ goreleaser release --snapshot --clean
 
 ## Controls
 
-- `tab` / `shift+tab`: move between fields
+- `tab` / `shift+tab`: move between fields; compact windows scroll automatically
 - `f2`: cycle stream security
 - `enter`: connect or disconnect
 - `f3`: toggle generated config view
@@ -83,11 +83,18 @@ The Windows integration updates the current user's WinINet proxy settings.
 Applications and Windows services that ignore those settings or use WinHTTP
 directly will not be routed through the client.
 
+When the terminal is shorter than the complete connection form, the TUI keeps
+status and security visible and shows a focus-following field viewport.
+
 The TUI starts a background daemon when connecting. Closing the terminal or
 quitting with `esc` / `ctrl+c` leaves that daemon running, so the VPN remains
 connected. Launching the TUI again reads the daemon state and shows the real
 connected status. Use `enter` from the dashboard to disconnect and stop the
 daemon.
+
+The daemon considers the connection ready when Xray's local HTTP proxy starts
+listening. Set `XRAY_TMUI_VPN_READINESS_URL` to an HTTP URL to additionally
+require an end-to-end request through the VLESS outbound during startup.
 
 For a full VPN experience, the next step is adding a TUN inbound and platform
 specific routing/DNS setup.

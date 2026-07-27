@@ -18,6 +18,8 @@ system HTTP, HTTPS, and SOCKS proxy settings at those local listeners.
 - A user can enter VLESS connection fields or import a `vless://` share link.
 - Supported stream security modes are `none`, `tls`, and `reality`.
 - The generated Xray JSON configuration can be inspected in the TUI.
+- The connection form switches to a focus-following field viewport in short
+  terminals while keeping status and security visible.
 - Connecting saves one active profile and starts a detached daemon.
 - The daemon owns the embedded Xray instance, so closing the TUI does not end
   the connection.
@@ -49,7 +51,7 @@ TUI
   -> starts a detached copy of the executable in daemon mode
   -> daemon starts embedded xray-core
   -> daemon enables system proxies on macOS or Windows
-  -> daemon verifies the HTTP proxy with a readiness request
+  -> daemon verifies that the local HTTP proxy is listening
   -> daemon writes state, counters, and logs once per second
   -> TUI polls that state for the dashboard
 ```
@@ -83,8 +85,9 @@ Files:
 - `xray-tmui-vpn.log`: logs exported from the dashboard.
 
 `XRAY_TMUI_VPN_CONFIG_DIR` overrides both directories, primarily for tests.
-`XRAY_TMUI_VPN_READINESS_URL` overrides the default readiness target
-`http://example.com/`.
+`XRAY_TMUI_VPN_READINESS_URL` optionally requires an end-to-end HTTP request
+through the configured VLESS outbound during startup. By default, readiness
+only requires Xray's local HTTP proxy to be listening.
 
 Secrets such as the VLESS UUID and Reality public key are currently stored in
 plain JSON with file mode `0600`.
@@ -101,8 +104,9 @@ plain JSON with file mode `0600`.
   system proxy settings are not changed.
 - System proxy restoration depends on graceful daemon shutdown. A crash or
   forced kill can leave system proxy settings enabled on macOS or Windows.
-- The daemon readiness check requires an HTTP request through the configured
-  proxy to succeed within 20 seconds.
+- The daemon readiness check requires Xray's local HTTP proxy to listen within
+  20 seconds. An end-to-end HTTP check is opt-in through
+  `XRAY_TMUI_VPN_READINESS_URL`.
 
 ## Development
 
@@ -120,7 +124,7 @@ build timestamp. Local builds report `dev`; GoReleaser injects release metadata
 through linker flags.
 
 Tests currently cover VLESS link parsing, profile persistence and log export,
-daemon state and stop-request helpers, readiness URL override, TUI
+daemon state and stop-request helpers, local readiness and URL override, TUI
 interaction/state loading, macOS proxy output parsing, and Windows proxy server
 formatting. CI runs tests and builds natively on macOS and Windows. The suite
 does not provide an end-to-end connection test against a real VLESS server.

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"net"
 	"os"
 	"testing"
 	"time"
@@ -163,6 +164,27 @@ func TestReadinessURLCanBeOverridden(t *testing.T) {
 
 	if got := readinessURL(); got != "http://probe.example.test/" {
 		t.Fatalf("readinessURL() = %q", got)
+	}
+}
+
+func TestReadinessURLIsDisabledByDefault(t *testing.T) {
+	t.Setenv(readinessURLEnv, "")
+
+	if got := readinessURL(); got != "" {
+		t.Fatalf("readinessURL() = %q, want empty", got)
+	}
+}
+
+func TestProbeLocalProxyDetectsListeningPort(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := probeLocalProxy(port); err != nil {
+		t.Fatalf("probeLocalProxy(%d): %v", port, err)
 	}
 }
 

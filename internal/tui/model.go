@@ -59,6 +59,7 @@ type Model struct {
 	busy         bool
 	showConfig   bool
 	configScroll int
+	formScroll   int
 	width        int
 	height       int
 	status       string
@@ -188,7 +189,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.resizeInputs()
 		m.clampConfigScroll()
+		m.ensureFormFocusVisible()
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -247,6 +250,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.inEditMode() && !m.busy && !m.running {
 				m.security = nextSecurity(m.security)
 				m.ensureVisibleFocus()
+				m.ensureFormFocusVisible()
 			}
 			return m, nil
 		case "f3":
@@ -267,6 +271,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "e":
 			if !m.inEditMode() && !m.busy && !m.running {
 				m.editing = true
+				m.ensureFormFocusVisible()
 				return m, nil
 			}
 		case "enter":
@@ -368,6 +373,14 @@ func (m Model) View() string {
 }
 
 func (m Model) editView() string {
+	full := m.fullEditView()
+	if m.height <= 0 || lipgloss.Height(full) <= m.height {
+		return full
+	}
+	return m.compactEditView()
+}
+
+func (m Model) fullEditView() string {
 	var b strings.Builder
 
 	b.WriteString(titleStyle.Render("xray-tmui-vpn " + buildinfo.DisplayVersion()))
@@ -378,28 +391,12 @@ func (m Model) editView() string {
 	b.WriteString(fmt.Sprintf("Status: %s\n", m.renderStatus()))
 	b.WriteString(fmt.Sprintf("Security: %s\n\n", m.security))
 
-	labels := []string{
-		"VLESS link",
-		"Server address",
-		"Server port",
-		"VLESS UUID",
-		"Server name",
-		"Fingerprint",
-		"ALPN",
-		"Reality public key",
-		"Reality short id",
-		"Reality spiderX",
-		"Flow",
-		"Local SOCKS port",
-		"Local HTTP port",
-	}
-
 	for i, input := range m.inputs {
 		if !m.visibleField(field(i)) {
 			continue
 		}
 
-		b.WriteString(labelStyle.Render(labels[i]))
+		b.WriteString(labelStyle.Render(fieldLabels[i]))
 		b.WriteString("\n")
 		b.WriteString(input.View())
 		b.WriteString("\n\n")
@@ -413,6 +410,40 @@ func (m Model) editView() string {
 	b.WriteString(helpStyle.Render(fmt.Sprintf("%s | tab focus | f2 security | f3 config | f4 import | esc quit", action)))
 
 	return b.String()
+}
+
+func (m Model) compactEditView() string {
+	visible := m.visibleFields()
+	pageSize := m.formPageSize()
+	start := minInt(m.formScroll, len(visible))
+	end := minInt(start+pageSize, len(visible))
+
+	lines := []string{
+		titleStyle.Render("xray-tmui-vpn " + buildinfo.DisplayVersion()),
+		fmt.Sprintf("Status: %s | Security: %s", m.renderStatus(), m.security),
+		helpStyle.Render(fmt.Sprintf("Fields %d-%d of %d", start+1, maxInt(start+1, end), len(visible))),
+	}
+	for _, index := range visible[start:end] {
+		lines = append(lines, labelStyle.Render(fieldLabels[index]), m.inputs[index].View())
+	}
+	lines = append(lines, helpStyle.Render(m.editHelp()))
+	return strings.Join(lines, "\n")
+}
+
+var fieldLabels = []string{
+	"VLESS link",
+	"Server address",
+	"Server port",
+	"VLESS UUID",
+	"Server name",
+	"Fingerprint",
+	"ALPN",
+	"Reality public key",
+	"Reality short id",
+	"Reality spiderX",
+	"Flow",
+	"Local SOCKS port",
+	"Local HTTP port",
 }
 
 func (m Model) dashboardView() string {
@@ -622,6 +653,7 @@ func (m *Model) moveFocus(key string) {
 	}
 
 	m.inputs[m.focusIndex].Focus()
+	m.ensureFormFocusVisible()
 }
 
 func (m *Model) ensureVisibleFocus() {
@@ -634,9 +666,94 @@ func (m *Model) ensureVisibleFocus() {
 		if m.visibleField(field(i)) {
 			m.focusIndex = i
 			m.inputs[m.focusIndex].Focus()
+			m.ensureFormFocusVisible()
 			return
 		}
 	}
+}
+
+func (m *Model) ensureFormFocusVisible() {
+	visible := m.visibleFields()
+	if len(visible) == 0 {
+		m.formScroll = 0
+		return
+	}
+
+	focusPosition := 0
+	for i, index := range visible {
+		if index == m.focusIndex {
+			focusPosition = i
+			break
+		}
+	}
+
+	pageSize := m.formPageSize()
+	if focusPosition < m.formScroll {
+		m.formScroll = focusPosition
+	}
+	if focusPosition >= m.formScroll+pageSize {
+		m.formScroll = focusPosition - pageSize + 1
+	}
+	m.clampFormScroll()
+}
+
+func (m *Model) clampFormScroll() {
+	maxScroll := maxInt(0, len(m.visibleFields())-m.formPageSize())
+	if m.formScroll < 0 {
+		m.formScroll = 0
+	}
+	if m.formScroll > maxScroll {
+		m.formScroll = maxScroll
+	}
+}
+
+func (m Model) formPageSize() int {
+	count := len(m.visibleFields())
+	if m.height <= 0 {
+		return count
+	}
+
+	const fixedLines = 4
+	return minInt(count, maxInt(1, (m.height-fixedLines)/2))
+}
+
+func (m Model) visibleFields() []int {
+	visible := make([]int, 0, len(m.inputs))
+	for i := range m.inputs {
+		if m.visibleField(field(i)) {
+			visible = append(visible, i)
+		}
+	}
+	return visible
+}
+
+func (m *Model) resizeInputs() {
+	if m.width <= 0 {
+		return
+	}
+
+	width := minInt(44, maxInt(8, m.width-2))
+	for i := range m.inputs {
+		m.inputs[i].Width = width
+	}
+}
+
+func (m Model) editHelp() string {
+	if m.width > 0 && m.width < 40 {
+		return "tab | f2 | f4 | esc"
+	}
+	if m.width > 0 && m.width < 60 {
+		return "enter | tab | f2 | f3 | f4 | esc"
+	}
+	if m.width > 0 && m.width < 76 {
+		return "enter | tab fields | f2 mode | f3 config | f4 import | esc"
+	}
+
+	action := "enter connect"
+	if m.running {
+		action = "enter disconnect"
+	}
+	return fmt.Sprintf("%s | tab fields | f2 security | f3 config | f4 import | esc quit", action)
 }
 
 func (m Model) visibleField(candidate field) bool {

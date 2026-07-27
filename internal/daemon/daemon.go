@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -25,9 +26,8 @@ const (
 	statusDisconnected  = "disconnected"
 	statusError         = "error"
 
-	defaultReadinessURL = "http://example.com/"
-	readinessURLEnv     = "XRAY_TMUI_VPN_READINESS_URL"
-	readinessTimeout    = 20 * time.Second
+	readinessURLEnv  = "XRAY_TMUI_VPN_READINESS_URL"
+	readinessTimeout = 20 * time.Second
 )
 
 type State struct {
@@ -446,10 +446,16 @@ func waitForProxyReady(config xray.RuntimeConfig, client *xray.Client, state Sta
 	var lastErr error
 
 	for time.Now().Before(deadline) {
-		if err := probeHTTPProxy(config.HTTPPort); err == nil {
-			return nil
-		} else {
+		if err := probeLocalProxy(config.HTTPPort); err != nil {
 			lastErr = err
+		} else if targetURL := readinessURL(); targetURL != "" {
+			if err := probeHTTPProxy(config.HTTPPort, targetURL); err != nil {
+				lastErr = err
+			} else {
+				return nil
+			}
+		} else {
+			return nil
 		}
 
 		state = applySnapshot(state, client.Snapshot())
@@ -466,7 +472,19 @@ func waitForProxyReady(config xray.RuntimeConfig, client *xray.Client, state Sta
 	return fmt.Errorf("proxy readiness check timed out: %w", lastErr)
 }
 
-func probeHTTPProxy(httpPort int) error {
+func probeLocalProxy(httpPort int) error {
+	connection, err := net.DialTimeout(
+		"tcp",
+		net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", httpPort)),
+		2*time.Second,
+	)
+	if err != nil {
+		return err
+	}
+	return connection.Close()
+}
+
+func probeHTTPProxy(httpPort int, targetURL string) error {
 	proxyURL, err := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", httpPort))
 	if err != nil {
 		return err
@@ -475,7 +493,7 @@ func probeHTTPProxy(httpPort int) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, readinessURL(), nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return err
 	}
@@ -498,10 +516,7 @@ func probeHTTPProxy(httpPort int) error {
 }
 
 func readinessURL() string {
-	if value := strings.TrimSpace(os.Getenv(readinessURLEnv)); value != "" {
-		return value
-	}
-	return defaultReadinessURL
+	return strings.TrimSpace(os.Getenv(readinessURLEnv))
 }
 
 func applySnapshot(state State, snapshot xray.Snapshot) State {

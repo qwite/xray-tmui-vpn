@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/qwites/xray-tmui-vpn/internal/daemon"
 	"github.com/qwites/xray-tmui-vpn/internal/profile"
 	"github.com/qwites/xray-tmui-vpn/internal/xray"
@@ -63,6 +64,69 @@ func TestFunctionKeysControlGlobalActions(t *testing.T) {
 
 	if !model.showConfig {
 		t.Fatal("showConfig was not toggled by f3")
+	}
+}
+
+func TestSmallEditViewKeepsConnectionHeaderVisible(t *testing.T) {
+	model := newTestModel(t)
+
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+	view := model.editView()
+
+	if height := lipgloss.Height(view); height > model.height {
+		t.Fatalf("edit view height = %d, terminal height = %d", height, model.height)
+	}
+	for _, expected := range []string{"Status:", "Security:", "VLESS link", "Server address"} {
+		if !strings.Contains(view, expected) {
+			t.Fatalf("small edit view does not contain %q: %q", expected, view)
+		}
+	}
+}
+
+func TestSmallEditViewScrollsToFocusedField(t *testing.T) {
+	model := newTestModel(t)
+
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
+	model = updated.(Model)
+	for range 11 {
+		updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+		model = updated.(Model)
+	}
+
+	view := model.editView()
+	if model.focusIndex != int(fieldHTTPPort) {
+		t.Fatalf("focusIndex = %d, want %d", model.focusIndex, fieldHTTPPort)
+	}
+	if !strings.Contains(view, "Local HTTP port") {
+		t.Fatalf("focused field is not visible: %q", view)
+	}
+	if strings.Contains(view, "VLESS link") {
+		t.Fatalf("first field stayed visible after scrolling to the last field: %q", view)
+	}
+	for _, expected := range []string{"Status:", "Security:"} {
+		if !strings.Contains(view, expected) {
+			t.Fatalf("small edit view does not contain %q after scrolling: %q", expected, view)
+		}
+	}
+	if height := lipgloss.Height(view); height > model.height {
+		t.Fatalf("scrolled edit view height = %d, terminal height = %d", height, model.height)
+	}
+}
+
+func TestSmallWindowNarrowsTextInputs(t *testing.T) {
+	model := newTestModel(t)
+
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 32, Height: 20})
+	model = updated.(Model)
+
+	for i, input := range model.inputs {
+		if input.Width != 30 {
+			t.Fatalf("input %d width = %d, want 30", i, input.Width)
+		}
+	}
+	if width := lipgloss.Width(model.editHelp()); width > model.width {
+		t.Fatalf("edit help width = %d, terminal width = %d", width, model.width)
 	}
 }
 
